@@ -13,15 +13,19 @@ from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import f1_score
 from sklearn.metrics import confusion_matrix, accuracy_score
-from sklearn.metrics import get_scorer
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.feature_selection import RFECV
 from sklearn.naive_bayes import GaussianNB
 from sklearn.naive_bayes import CategoricalNB
 from sklearn.model_selection import StratifiedKFold
-from sklearn.linear_model import LogisticRegression
+from sklearn.feature_selection import SelectKBest
+from sklearn.feature_selection import chi2
+from sklearn.feature_selection import mutual_info_classif
 import matplotlib.pyplot as plt
 import sys
+from six import StringIO # is used for plotting the decision tree
+from IPython.display import Image # is used for plotting the decision tree
+from IPython.core.display import HTML # is used for showing the confusion matrix
 
 
 
@@ -34,6 +38,9 @@ feature_cols = ['srcip', 'sport', 'dstip', 'dsport', 'proto','state',	'dur','sby
 label_cols = ['attack_cat', 'Label']
 
 #process command line options with format <test file>, <selected classification method>, <task - label or attack_cat>, <optional load model name>
+#feature selection commands:  RFE, CHI2, CORR
+#classification commands:  NB, KNN, DT
+feature_selection = "RFE"
 test_file_name = sys.argv[1]
 class_selection = sys.argv[2]
 task_selection = sys.argv[3]
@@ -45,13 +52,12 @@ if len(sys.argv) == 5:
         load_pickles = True
     else:
         print("invalid pickle option, not loading pickle")
-#test_file_name = "UNSW-NB15-BALANCED-TRAIN.csv"
-#class_selection = "CNB"
-#task_selection = "attack_cat"
 
 pdata = pd.read_csv(test_file_name, header=None, names=column_names, skiprows=1)
 
 df = pd.DataFrame(pdata, columns=column_names)
+
+
 
 # delete the columns with null values
 del df['ct_flw_http_mthd']
@@ -87,47 +93,83 @@ for index in attack_cat_uniques:
     
 X_train, X_validation, y_train, y_validation = train_test_split( df[feature_cols], df[label_cols], test_size = 0.20, random_state = 0)
 X_train, X_test, y_train, y_test = train_test_split( X_train, y_train, test_size = 0.10, random_state = 0)
+X_train.apply(LabelEncoder().fit_transform)
+X_validation.apply(LabelEncoder().fit_transform)
+X_test.apply(LabelEncoder().fit_transform)
 preprocessing.normalize(X_train)
 
-def label_class():
-    y=df["Label"] #Target
-    X_train, X_validation, y_train, y_validation = train_test_split( X, y, test_size = 0.20, random_state = 0)
-    X_train, X_test, y_train, y_test = train_test_split( X_train, y_train, test_size = 0.10, random_state = 0)
-    X_train.apply(LabelEncoder().fit_transform)
-    X_test.apply(LabelEncoder().fit_transform)
-    preprocessing.normalize(X_train)
-#   Classification using KNN
-    knnClassifier=KNeighborsClassifier(algorithm='auto', leaf_size=30, metric='minkowski',
-    metric_params=None, n_jobs=1, n_neighbors=5, p=2,
-    weights='uniform')
+def correlation_selection(X_train, y_train, task_selection):
+    X_train = pd.concat((X_train, y_train[task_selection]), axis=1)
+
+    if task_selection=="Label":
+        correlation = X_train.corr()["Label"].abs()
+        threshold = 0.60
+        selected_corr_features = correlation[correlation > threshold].index
+        if 'Label' in selected_corr_features:
+         selected_corr_features=selected_corr_features.drop('Label')
+        if 'attack_cat' in selected_corr_features:
+         selected_corr_features=selected_corr_features.drop('attack_cat')
+    else:
+        X_train['attack_cat'], index = pd.factorize(X_train['attack_cat'])
+        pd.get_dummies(X_train['attack_cat'])
+        correlation = X_train.corr()["attack_cat"].abs()
+        threshold = 0.15
+        selected_corr_features = correlation[correlation > threshold].index
+        if 'Label' in selected_corr_features:
+         selected_corr_features = selected_corr_features.drop('Label')
+        if 'attack_cat' in selected_corr_features:
+         selected_corr_features = selected_corr_features.drop('attack_cat')
+        X_train ['attack_cat'] = pd.Categorical.from_codes(X_train['attack_cat'], index)
+    return selected_corr_features
+
+def DT_classification(X_train, X_validation, y_train, y_val, task_selection, selected_features = []):
+    if len(selected_features) == 0:
+        selected_features = feature_cols
+
+    X_train = X_train[selected_features]
+    X_validation = X_validation[selected_features]
+    yT_train = y_train[task_selection]
+    yT_validation = y_val[task_selection]
+
+    dtree = DecisionTreeClassifier()
+    dtree.fit(X_train, yT_train)
+    y_pred = dtree.predict(X_validation)
+    confusion_matrix(yT_validation, y_pred)
+    accuracy_score(yT_validation, y_pred)
+    print("Accuracy: {:.2f}%\n".format(metrics.accuracy_score(yT_validation, y_pred)*100))
+    print(metrics.classification_report(yT_validation, y_pred))
+    micro_f1 = f1_score(yT_validation, y_pred, average='micro')
+    print("Micro F1 Score:", micro_f1)
+
+def chi_square_selection(X, y, task):
+    y = y[task]
+    print("line 1")
+    KBest = SelectKBest(chi2, k=10).fit(X, y) 
+    print("line 2")
+    f = KBest.get_support(1) #the most important features
+    return X_test.columns[f]
+
+def knn_classifier(x_train, y_train, x_val, y_val, task_selection, selected_features = []):
+    if len(selected_features) == 0:
+        selected_features = feature_cols
+
+    X_train = x_train[selected_features]
+    y_train = y_train[task_selection]
+    X_validation = x_val[selected_features]
+    y_validation = y_val[task_selection]
+
+    knnClassifier=KNeighborsClassifier()
     knnClassifier.fit(X_train, y_train)
+
     y_pred = knnClassifier.predict(X_validation)
     confusion_matrix(y_validation, y_pred)
     accuracy_score(y_validation, y_pred)
-    print("Accuracy: {:.2f}%\n".format(metrics.accuracy_score(y_validation, y_pred)*100))
+    print("Accuracy after feature selection for target 'attack_cat': {:.2f}%\n".format(metrics.accuracy_score(y_validation, y_pred)*100))
     print(metrics.classification_report(y_validation, y_pred))
     micro_f1 = f1_score(y_validation, y_pred, average='micro')
-    print("Micro F1 Score:", micro_f1) 
+    print("Micro F1 Score after feature selection for target 'attack_cat':", micro_f1) 
 
-def attack_class():
-    y=df["attack_cat"]
-    X_train, X_validation, y_train, y_validation = train_test_split( X, y, test_size = 0.20, random_state = 0)
-    X_train, X_test, y_train, y_test = train_test_split( X_train, y_train, test_size = 0.10, random_state = 0)
-    X_train.apply(LabelEncoder().fit_transform)
-    X_test.apply(LabelEncoder().fit_transform)
-    preprocessing.normalize(X_train)
-#   classification using DecisionTree
-    dtree = DecisionTreeClassifier()
-    dtree.fit(X_train, y_train)
-    y_pred = dtree.predict(X_validation)
-    confusion_matrix(y_validation, y_pred)
-    accuracy_score(y_validation, y_pred)
-    print("Accuracy: {:.2f}%\n".format(metrics.accuracy_score(y_validation, y_pred)*100))
-    print(metrics.classification_report(y_validation, y_pred))
-    micro_f1 = f1_score(y_validation, y_pred, average='micro')
-    print("Micro F1 Score:", micro_f1) 
-
-def rfe_featureselection(y_train, task_selection):
+def rfe_feature_selection(y_train, task_selection):
     y_train = y_train[task_selection]
     preprocessing.normalize(X_train)
     clf = DecisionTreeClassifier()
@@ -159,7 +201,7 @@ def naive_bayes_classifier(x_train, y_train, x_val, y_val, task_selection, selec
                             'Sintpkt', 'synack', 'ct_srv_dst']
         elif task_selection == "attack_cat":
             selected_features = ['dsport', 'sbytes', 'sttl', 'service']
-    elif selected_features.empty:
+    elif len(selected_features) == 0:
         selected_features = feature_cols
     else:
         selected_features = selected_features
@@ -185,21 +227,27 @@ def naive_bayes_classifier(x_train, y_train, x_val, y_val, task_selection, selec
     
 print("Feature analysis and classification")
 
-print("RFE Feature Selection")
+print("Feature Selection")
+#For testing Feature Selection:
+if feature_selection == "CORR":
+    selected_columns = correlation_selection(X_train, y_train, task_selection)
+elif feature_selection == "CHI2":
+    selected_columns = chi_square_selection(X_train, y_train, task_selection)
+elif feature_selection == "RFE":
+    #rfe_model, selected_columns = rfe_feature_selection(y_train, task_selection)
+    if task_selection == "Label":
+        selected_columns = ['srcip', 'sport', 'sbytes', 'dbytes', 'sttl', 'smeansz', 'Stime',
+                            'Sintpkt', 'synack', 'ct_srv_dst']
+    if task_selection == "attack_cat":
+        selected_columns = ['dsport', 'sbytes', 'sttl', 'service']
 
-#Reverse Feature Elimination and Naive Bayes Classification:
-if class_selection == "CNB":
-    rfe_model, selected_colums = rfe_featureselection(y_train, task_selection)
-    naive_bayes_classifier(X_train, y_train, X_validation, y_validation, task_selection, selected_features=selected_colums, load_pickle=load_pickles)
-X=df.drop(["attack_cat"],axis=1)
-y=df["Label"]
-corr_data = np.abs(X.corrwith(y))
-# Selecting features with the high correlation coefficients
-selected = corr_data.nlargest(n=26).index
-X= X[selected]
-X=X.drop(["Label"],axis=1)
-print("\nLabel classification")
-#label_class()
-print("\nattack_cat classification")
-#attack_class()
+#Classifiers:
+print("Classification")
+if class_selection == "DT":
+    DT_classification(X_train, X_validation, y_train, y_validation, task_selection, selected_columns)
+if class_selection == "KNN":
+    knn_classifier(X_train, y_train, X_validation, y_validation, task_selection, selected_columns)
+if class_selection == "NB":
+    naive_bayes_classifier(X_train, y_train, X_validation, y_validation, task_selection, selected_features=selected_columns, load_pickle=load_pickles)
+
 print("done")
