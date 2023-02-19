@@ -13,10 +13,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import f1_score
 from sklearn.metrics import confusion_matrix, accuracy_score
+from sklearn.metrics import get_scorer
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.feature_selection import RFECV
 from sklearn.naive_bayes import GaussianNB
 from sklearn.naive_bayes import CategoricalNB
+from sklearn.model_selection import StratifiedKFold
+from sklearn.linear_model import LogisticRegression
+import matplotlib.pyplot as plt
 import sys
 
 
@@ -41,6 +45,9 @@ if len(sys.argv) == 5:
         load_pickles = True
     else:
         print("invalid pickle option, not loading pickle")
+#test_file_name = "UNSW-NB15-BALANCED-TRAIN.csv"
+#class_selection = "CNB"
+#task_selection = "attack_cat"
 
 pdata = pd.read_csv(test_file_name, header=None, names=column_names, skiprows=1)
 
@@ -78,7 +85,11 @@ for index in attack_cat_uniques:
     else:
         df["attack_cat"] = df["attack_cat"].replace(index, matches[0])
     
- 
+X_train, X_validation, y_train, y_validation = train_test_split( df[feature_cols], df[label_cols], test_size = 0.20, random_state = 0)
+X_train, X_test, y_train, y_test = train_test_split( X_train, y_train, test_size = 0.10, random_state = 0)
+preprocessing.normalize(X_train)
+y_train_master = y_train
+
 def label_class():
     y=df["Label"] #Target
     X_train, X_validation, y_train, y_validation = train_test_split( X, y, test_size = 0.20, random_state = 0)
@@ -117,64 +128,56 @@ def attack_class():
     micro_f1 = f1_score(y_validation, y_pred, average='micro')
     print("Micro F1 Score:", micro_f1) 
 
-def rfe_featureselection_label(task_selection):
-    y_train = y_train[task_selection]
-    rfe = RFECV(DecisionTreeClassifier())
-    rfe = rfe.fit(X_train, y_train)
-    print("Num features: ", rfe.n_features_)
-    print("Selected features")
-    print(X_train.columns[rfe.support_])
-    return rfe, X_train.columns[rfe.support_]
-
-def rfe_featureselection_attack_cat(task_selection):
-    y_train = y_train[task_selection]
+def rfe_featureselection(task_selection):
+    y_train = y_train_master[task_selection]
     preprocessing.normalize(X_train)
-    rfe = RFECV(DecisionTreeClassifier())
+    clf = DecisionTreeClassifier()
+    cv = StratifiedKFold(5)
+    #print(get_scorer(metrics.get_scorer_names()))
+    min_features_to_select = 1
+    rfe = RFECV(estimator=clf, step=1, cv=cv, scoring="f1_micro", min_features_to_select=1, n_jobs=12)
     rfe = rfe.fit(X_train, y_train)
     print("Num features: ", rfe.n_features_)
     print("Selected features")
     print(X_train.columns[rfe.support_])
+    n_scores = len(rfe.cv_results_["mean_test_score"])
+    plt.figure()
+    plt.xlabel("Number of features selected")
+    plt.ylabel("Mean test f1_micro")
+    plt.errorbar(
+        range(min_features_to_select, n_scores + min_features_to_select),
+        rfe.cv_results_["mean_test_score"],
+        yerr=rfe.cv_results_["std_test_score"],
+    )
+    plt.title("Recursive Feature Elimination")
+    plt.show()
     return rfe, X_train.columns[rfe.support_]
 
-def gnb_naive_bayes_label(task_selection, selected_features = [], load_pickle = False):
+def naive_bayes_classifier(task_selection, selected_features = [], load_pickle = False):
     if load_pickle:
-        selected_features = ['srcip', 'sport', 'sbytes', 'dbytes', 'sttl', 'smeansz', 'Stime',
+        if task_selection == "Label":
+            selected_features = ['srcip', 'sport', 'sbytes', 'dbytes', 'sttl', 'smeansz', 'Stime',
                             'Sintpkt', 'synack', 'ct_srv_dst']
-    elif not selected_features:
-        print("loading the whole thing")
+        elif task_selection == "attack_cat":
+            selected_features = ['dsport', 'sbytes', 'sttl', 'service']
+    elif selected_features.empty:
         selected_features = feature_cols
     else:
         selected_features = selected_features
+        
     y=df[task_selection]
     X=df[selected_features]
     X_train, X_validation, y_train, y_validation = train_test_split( X, y, test_size = 0.20, random_state = 0)
     X_train, X_test, y_train, y_test = train_test_split( X_train, y_train, test_size = 0.10, random_state = 0)
     preprocessing.normalize(X_train)
-    gnb = GaussianNB()
+    
+    if task_selection == "Label":
+        gnb = GaussianNB()
+        
+    elif task_selection == "attack_cat":
+        gnb = CategoricalNB(force_alpha=True)
+        
     gnb = gnb.fit(X_train, y_train)
-    y_pred = gnb.predict(X_validation)
-    confusion_matrix(y_validation, y_pred)
-    accuracy_score(y_validation, y_pred)
-    print("Accuracy: {:.2f}%\n".format(metrics.accuracy_score(y_validation, y_pred)*100))
-    print(metrics.classification_report(y_validation, y_pred))
-    micro_f1 = f1_score(y_validation, y_pred, average='micro')
-    print("Micro F1 Score:", micro_f1)
-
-def gnb_naive_bayes_attack_cat(task_selection, selected_features = [], load_pickle = False):
-    if load_pickle:
-        selected_features = ['dsport', 'sbytes', 'sttl', 'service']
-    elif not selected_features:
-        selected_features = feature_cols
-    else:
-        selected_features = selected_features
-    y=df[task_selection]
-    X=df[selected_features]
-    X_train, X_validation, y_train, y_validation = train_test_split( X, y, test_size = 0.20, random_state = 0)
-    X_train, X_test, y_train, y_test = train_test_split( X_train, y_train, test_size = 0.10, random_state = 0)
-    preprocessing.normalize(X_train)
-    gnb = CategoricalNB(force_alpha=True)
-    gnb = gnb.fit(X_train, y_train)
-    CategoricalNB(force_alpha=True)
     y_pred = gnb.predict(X_validation)
     confusion_matrix(y_validation, y_pred)
     accuracy_score(y_validation, y_pred)
@@ -182,22 +185,15 @@ def gnb_naive_bayes_attack_cat(task_selection, selected_features = [], load_pick
     print(metrics.classification_report(y_validation, y_pred))
     micro_f1 = f1_score(y_validation, y_pred, average='micro')
     print("Micro F1 Score:", micro_f1) 
-
+    
 print("Feature analysis and classification")
 
 print("RFE Feature Selection")
 
 #Reverse Feature Elimination and Naive Bayes Classification:
 if class_selection == "CNB":
-    if task_selection == "Label":
-        #rfe_model, selected_colums = rfe_featureselection_label()
-        selected_colums = ['srcip', 'sport', 'sbytes', 'dbytes', 'sttl', 'smeansz', 'Stime',
-                            'Sintpkt', 'synack', 'ct_srv_dst']
-        gnb_naive_bayes_label(task_selection, selected_features=selected_colums, load_pickle=load_pickles)
-    elif task_selection == "attack_cat":
-        #rfe_model, selected_colums = rfe_featureselection_attack_cat()
-        selected_colums = ['dsport', 'sbytes', 'sttl', 'service']
-        gnb_naive_bayes_attack_cat(task_selection, selected_features=selected_colums, load_pickle=load_pickles)
+    rfe_model, selected_colums = rfe_featureselection(task_selection)
+    naive_bayes_classifier(task_selection, selected_features=selected_colums, load_pickle=load_pickles)
 X=df.drop(["attack_cat"],axis=1)
 y=df["Label"]
 corr_data = np.abs(X.corrwith(y))
@@ -210,4 +206,3 @@ print("\nLabel classification")
 print("\nattack_cat classification")
 #attack_class()
 print("done")
-    
