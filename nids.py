@@ -151,6 +151,7 @@ def chi_square_selection(X, y, task):
 
 def knn_classifier(x_train, y_train, x_val, y_val, task_selection, selected_features = []):
     if len(selected_features) == 0:
+
         selected_features = ['dsport', 'sbytes', 'sttl', 'dbytes'] #the process to choose these top 4 features is discussed in the report
 
     X_train = x_train[selected_features]
